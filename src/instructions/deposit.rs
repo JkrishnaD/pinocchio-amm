@@ -15,6 +15,7 @@ use crate::{
         AccountCheck, AssociatedTokenAccount, AssociatedTokenAccountCheck,
         AssociatedTokenAccountInit, MintInterface, SignerAccount,
     },
+    state::Config,
 };
 
 pub struct DepositAccounts<'a> {
@@ -32,6 +33,7 @@ pub struct DepositAccounts<'a> {
 
     pub user_x_ata: &'a AccountInfo,
     pub user_y_ata: &'a AccountInfo,
+    pub user_lp_ata: &'a AccountInfo,
 
     pub token_program: &'a AccountInfo,
     pub system_program: &'a AccountInfo,
@@ -42,7 +44,7 @@ impl<'a> TryFrom<&'a [AccountInfo]> for DepositAccounts<'a> {
     type Error = ProgramError;
 
     fn try_from(accounts: &'a [AccountInfo]) -> Result<Self, Self::Error> {
-        let [user, mint_x, mint_y, lp_mint, config, vault_x, vault_y, user_x_ata, user_y_ata, vault_lp, token_program, system_program, associated_token_program] =
+        let [user, mint_x, mint_y, lp_mint, config, vault_x, vault_y, user_lp_ata, user_x_ata, user_y_ata, vault_lp, token_program, system_program, associated_token_program] =
             accounts
         else {
             return Err(ProgramError::InvalidAccountData);
@@ -55,6 +57,9 @@ impl<'a> TryFrom<&'a [AccountInfo]> for DepositAccounts<'a> {
 
         AssociatedTokenAccount::check(user_x_ata, user, mint_x)?;
         AssociatedTokenAccount::check(user_y_ata, user, mint_y)?;
+        AssociatedTokenAccount::check(user_lp_ata, user, lp_mint)?;
+        AssociatedTokenAccount::check(vault_lp, vault_x, lp_mint)?;
+        AssociatedTokenAccount::check(vault_lp, vault_y, lp_mint)?;
 
         let seeds = &[b"lp_mint", config.key().as_ref()];
         let (expected_lp_mint, _) = find_program_address(seeds, &crate::ID);
@@ -75,6 +80,7 @@ impl<'a> TryFrom<&'a [AccountInfo]> for DepositAccounts<'a> {
             config,
             vault_x,
             vault_y,
+            user_lp_ata,
             user_x_ata,
             user_y_ata,
             vault_lp,
@@ -133,26 +139,9 @@ impl<'a> TryFrom<(&'a [AccountInfo], &'a [u8])> for Deposit<'a> {
         let accounts = DepositAccounts::try_from(accounts)?;
         let instructions = DepositInstructions::try_from(data)?;
 
+        // user lp ata account creation if needed
         AssociatedTokenAccount::init_if_needed(
-            accounts.vault_x,
-            accounts.mint_x,
-            accounts.user,
-            accounts.user,
-            accounts.system_program,
-            accounts.token_program,
-        )?;
-
-        AssociatedTokenAccount::init_if_needed(
-            accounts.vault_y,
-            accounts.mint_y,
-            accounts.user,
-            accounts.user,
-            accounts.system_program,
-            accounts.token_program,
-        )?;
-
-        AssociatedTokenAccount::init_if_needed(
-            accounts.vault_lp,
+            accounts.user_lp_ata,
             accounts.lp_mint,
             accounts.user,
             accounts.user,
@@ -170,6 +159,27 @@ impl<'a> TryFrom<(&'a [AccountInfo], &'a [u8])> for Deposit<'a> {
 impl<'a> Deposit<'a> {
     pub const DISCRIMINATOR: &'a u8 = &1;
     pub fn process(&self) -> ProgramResult {
+        let config = Config::load(self.accounts.config)?;
+
+        let config_bump = config.config_bump();
+
+        // seeds derivation
+        let config_bindings = config_bump.to_le_bytes();
+        let config_seeds = [b"config", config_bindings.as_ref()];
+        let (expected_config, _) = find_program_address(&config_seeds, &crate::ID);
+
+        let lp_mint_seeds = [b"lp_mint", self.accounts.config.key().as_ref()];
+        let (expected_lp_mint, _) = find_program_address(&lp_mint_seeds, &crate::ID);
+
+        // PDA's validation
+        if expected_config != *self.accounts.config.key() {
+            return Err(PinocchioError::InvalidConfig.into());
+        }
+
+        if expected_lp_mint != *self.accounts.lp_mint.key() {
+            return Err(PinocchioError::InvalidLpMint.into());
+        }
+
         // getting the vault datas
         let vault_x_data = self.accounts.vault_x.try_borrow_data()?;
         let vault_x = unsafe { TokenAccount::from_bytes_unchecked(&vault_x_data) };

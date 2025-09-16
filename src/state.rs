@@ -85,6 +85,10 @@ impl Config {
         &mut *(bytes.as_mut_ptr() as *mut Config)
     }
 
+    pub fn config_bump(&self) -> u8 {
+        self.config_bump
+    }
+
     pub fn set_inner(
         &mut self,
         authority: Pubkey,
