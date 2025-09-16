@@ -124,8 +124,6 @@ impl<'a> TryFrom<&'a [u8]> for DepositInstructions {
 pub struct Deposit<'a> {
     pub accounts: DepositAccounts<'a>,
     pub instructions: DepositInstructions,
-    pub config_bump: u8,
-    pub lp_bump: u8,
 }
 
 impl<'a> TryFrom<(&'a [AccountInfo], &'a [u8])> for Deposit<'a> {
@@ -162,27 +160,9 @@ impl<'a> TryFrom<(&'a [AccountInfo], &'a [u8])> for Deposit<'a> {
             accounts.token_program,
         )?;
 
-        let seeds_slice = &[
-            b"config",
-            accounts.mint_x.key().as_ref(),
-            accounts.mint_y.key().as_ref(),
-        ];
-        let (_, config_bump) = find_program_address(seeds_slice, &crate::ID);
-
-        let (_, lp_bump) = find_program_address(
-            &[
-                b"lp_mint",
-                accounts.mint_x.key().as_ref(),
-                accounts.mint_y.key().as_ref(),
-            ],
-            &crate::ID,
-        );
-
         Ok(Self {
             accounts,
             instructions,
-            config_bump,
-            lp_bump,
         })
     }
 }
