@@ -7,7 +7,6 @@ edition = "2021"
 crate-type = ["lib", "cdylib"]
 
 [dependencies]
-constant-product-curve = { git = "https://github.com/deanmlittle/constant-product-curve", version = "0.1.0" }
 pinocchio = "0.9.1"
 pinocchio-associated-token-account = "0.2.0"
 pinocchio-system = "0.3.0"

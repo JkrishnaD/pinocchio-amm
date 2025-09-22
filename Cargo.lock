@@ -6,17 +6,11 @@ version = 4
 name = "blueshift_native_amm"
 version = "0.1.0"
 dependencies = [
- "constant-product-curve",
  "pinocchio",
  "pinocchio-associated-token-account",
  "pinocchio-system",
  "pinocchio-token",
 ]
-
-[[package]]
-name = "constant-product-curve"
-version = "0.1.0"
-source = "git+https://github.com/deanmlittle/constant-product-curve#2a723a0ff5ad522f657f80c053c2bb290da28b70"
 
 [[package]]
 name = "five8_const"

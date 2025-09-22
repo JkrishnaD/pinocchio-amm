@@ -18,6 +18,7 @@ pub enum PinocchioError {
     Expired = 0x8,
     InvalidConfig = 0x9,
     InvalidLpMint = 0xA,
+    InvalidMint = 0xB,
 }
 
 impl PinocchioError {
@@ -36,6 +37,30 @@ impl PinocchioError {
             PinocchioError::Expired => "Withdrawal expired",
             PinocchioError::InvalidConfig => "Invalid Config Account",
             PinocchioError::InvalidLpMint => "Invalid LP Mint",
+            PinocchioError::InvalidMint => "Ata Account mint does not match",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum CurveError {
+    Overflow,
+    SlippageExceeded,
+    MathOverflow,
+}
+
+impl From<CurveError> for ProgramError {
+    fn from(e: CurveError) -> Self {
+        ProgramError::Custom(e as u32)
+    }
+}
+
+impl CurveError {
+    pub fn to_string(&self) -> &'static str {
+        match self {
+            CurveError::Overflow => "Overflow",
+            CurveError::SlippageExceeded => "Slippage Exceeded",
+            CurveError::MathOverflow => "Math Overflow",
         }
     }
 }

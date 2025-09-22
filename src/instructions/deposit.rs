@@ -1,7 +1,8 @@
-use core::cmp;
-
 use pinocchio::{
-    account_info::AccountInfo, program_error::ProgramError, pubkey::find_program_address,
+    account_info::AccountInfo,
+    instruction::{Seed, Signer},
+    program_error::ProgramError,
+    pubkey::find_program_address,
     ProgramResult,
 };
 use pinocchio_token::{
@@ -10,12 +11,12 @@ use pinocchio_token::{
 };
 
 use crate::{
-    error::PinocchioError,
+    error::{CurveError, PinocchioError},
     instructions::{
         AccountCheck, AssociatedTokenAccount, AssociatedTokenAccountCheck,
         AssociatedTokenAccountInit, MintInterface, SignerAccount,
     },
-    state::Config,
+    state::{Config, XYAmounts},
 };
 
 pub struct DepositAccounts<'a> {
@@ -58,8 +59,9 @@ impl<'a> TryFrom<&'a [AccountInfo]> for DepositAccounts<'a> {
         AssociatedTokenAccount::check(user_x_ata, user, mint_x)?;
         AssociatedTokenAccount::check(user_y_ata, user, mint_y)?;
         AssociatedTokenAccount::check(user_lp_ata, user, lp_mint)?;
-        AssociatedTokenAccount::check(vault_lp, vault_x, lp_mint)?;
-        AssociatedTokenAccount::check(vault_lp, vault_y, lp_mint)?;
+        AssociatedTokenAccount::check(vault_x, config, mint_x)?;
+        AssociatedTokenAccount::check(vault_x, config, mint_y)?;
+        AssociatedTokenAccount::check(vault_lp, config, lp_mint)?;
 
         let seeds = &[b"lp_mint", config.key().as_ref()];
         let (expected_lp_mint, _) = find_program_address(seeds, &crate::ID);
@@ -92,9 +94,9 @@ impl<'a> TryFrom<&'a [AccountInfo]> for DepositAccounts<'a> {
 }
 
 pub struct DepositInstructions {
-    pub mint_x: u64,
-    pub mint_y: u64,
-    pub min_lp_amount: u64,
+    pub max_x: u64,
+    pub max_y: u64,
+    pub amount: u64,
 }
 
 impl<'a> TryFrom<&'a [u8]> for DepositInstructions {
@@ -105,24 +107,24 @@ impl<'a> TryFrom<&'a [u8]> for DepositInstructions {
             return Err(ProgramError::InvalidInstructionData);
         };
 
-        let mint_x = u64::from_le_bytes([
+        let max_x = u64::from_le_bytes([
             data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
         ]);
-        let mint_y = u64::from_le_bytes([
+        let max_y = u64::from_le_bytes([
             data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15],
         ]);
-        let min_lp_amount = u64::from_le_bytes([
+        let amount = u64::from_le_bytes([
             data[16], data[17], data[18], data[19], data[20], data[21], data[22], data[23],
         ]);
 
-        if mint_x == 0 || mint_y == 0 {
+        if max_x == 0 || max_y == 0 {
             return Err(PinocchioError::InvalidMintAmount.into());
         }
 
         Ok(Self {
-            mint_x,
-            mint_y,
-            min_lp_amount,
+            max_x,
+            max_y,
+            amount,
         })
     }
 }
@@ -207,54 +209,29 @@ impl<'a> Deposit<'a> {
 
         let lp_supply = vault_lp.amount();
 
-        let lp_mint_tokens_supply = if reserve_mint_x == 0 && reserve_mint_y == 0 {
-            let product = (self.instructions.mint_x as u128)
-                .checked_mul(self.instructions.mint_y as u128)
-                .ok_or_else(|| PinocchioError::MathOverflow)?;
-
-            if product == 0 {
-                return Err(PinocchioError::InvalidMintSupply.into());
+        let (x, y) = match reserve_mint_x == 0 && reserve_mint_y == 0 && lp_supply == 0 {
+            true => (self.instructions.max_x, self.instructions.max_y),
+            false => {
+                let amount = XYAmounts::xy_deposit_amounts_from_l(
+                    reserve_mint_x,
+                    reserve_mint_y,
+                    lp_supply,
+                    self.instructions.amount,
+                    6,
+                )
+                .map_err(|_| CurveError::MathOverflow)?;
+                (amount.x, amount.y)
             }
-
-            let sqrt_result = product.isqrt() as u64;
-
-            if sqrt_result < 1000 {
-                return Err(PinocchioError::InvalidMintSupply.into());
-            }
-
-            sqrt_result
-        } else {
-            if reserve_mint_x == 0 || reserve_mint_y == 0 || lp_supply == 0 {
-                return Err(PinocchioError::InvalidMintSupply.into());
-            };
-
-            let lp_from_x = (self.instructions.mint_x as u128)
-                .checked_mul(lp_supply as u128)
-                .ok_or_else(|| PinocchioError::MathOverflow)?
-                .checked_div(reserve_mint_x as u128)
-                .ok_or_else(|| PinocchioError::MathOverflow)? as u64;
-
-            let lp_from_y = (self.instructions.mint_y as u128)
-                .checked_mul(lp_supply as u128)
-                .ok_or_else(|| PinocchioError::MathOverflow)?
-                .checked_div(reserve_mint_y as u128)
-                .ok_or_else(|| PinocchioError::MathOverflow)? as u64;
-
-            cmp::min(lp_from_x, lp_from_y)
         };
 
-        if lp_mint_tokens_supply == 0 {
-            return Err(PinocchioError::InvalidAmount.into());
-        }
-
-        if lp_mint_tokens_supply < self.instructions.min_lp_amount {
-            return Err(PinocchioError::SlipageExceeded.into());
+        if x > self.instructions.max_x || y > self.instructions.max_y {
+            return Err(CurveError::SlippageExceeded)?;
         }
 
         Transfer {
             from: self.accounts.user_x_ata,
             to: self.accounts.vault_x,
-            amount: self.instructions.mint_x,
+            amount: x,
             authority: self.accounts.user,
         }
         .invoke()?;
@@ -262,18 +239,20 @@ impl<'a> Deposit<'a> {
         Transfer {
             from: self.accounts.user_y_ata,
             to: self.accounts.vault_y,
-            amount: self.instructions.mint_y,
+            amount: y,
             authority: self.accounts.user,
         }
         .invoke()?;
 
+        let signer_seeds = [Seed::from(b"config"), Seed::from(config_bindings.as_ref())];
+        let signer = Signer::from(&signer_seeds);
         MintTo {
-            account: self.accounts.lp_mint,
+            account: self.accounts.user_lp_ata,
             mint: self.accounts.lp_mint,
-            amount: lp_mint_tokens_supply,
+            amount: self.instructions.amount,
             mint_authority: self.accounts.config,
         }
-        .invoke()?;
+        .invoke_signed(&[signer])?;
         Ok(())
     }
 }
